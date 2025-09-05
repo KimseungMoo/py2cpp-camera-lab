@@ -1,0 +1,314 @@
+---
+description:
+# ============================================
+# Cursor Workspace Rules — Python→C++ Porting (Qt Camera App)
+# ============================================
+# 목표
+# - PySide6(QML/Widgets)로 카메라 앱을 먼저 개발하고, 동일 구조로 Qt C++로 1:1 포팅 가능한 코드/주석/테스트를 생산한다.
+# - AI는 "설계 계획 → 구현 → 테스트/예제 → 포팅 메모 → 다음 단계 제안" 순으로 답변한다(각 단계는 짧은 소제목 포함).
+# - 모든 코드에는 학습을 돕는 주석(개념 설명 + 포팅 관점)을 풍부하게 포함한다.
+
+# --------------------------------------------
+# 아키텍처 원칙 (Portability First)
+# --------------------------------------------
+- 화면은 되도록 **QML**로 작성하고, 로직은 "백엔드 서비스 객체"로 분리한다.
+  - Python에선 PySide6의 QObject 파생 클래스로, C++에선 동일한 시그니처의 QObject 파생 클래스로 치환 가능해야 한다.
+- 데이터/프레임 타입은 **Qt 표준 타입**으로 고정: QImage, QByteArray, QVariant(Map/List), QString, QSize, QRect 등.
+  - 파이썬에서도 가능하면 numpy 배열을 직접 노출하지 말고, 내부에서만 사용 후 **QImage**로 정규화해서 외부로 전달.
+- 신호/슬롯 시그니처를 문서화하고, **인자 타입/이름/역할**을 고정한다.
+- I/O 계약(프로토콜)을 명시한다: 프레임 포맷 **RGBA8888**, 타임스탬프 형식(ISO8601), 파일명 규칙, 저장 디렉터리 구조 등.
+
+# --------------------------------------------
+# 의존성 & 도구
+# --------------------------------------------
+- Python: PySide6, (옵션) opencv-python, pytest, mypy(타입체크), black/isort(포매터), logging.
+- C++: Qt6(Core, Gui, Qml, Multimedia), CMake, ctest, clang-format.
+- 새로운 외부 의존성은 도입 전에 "C++ 대체 가능성"을 설명하고 허락을 구한다.
+
+# --------------------------------------------
+# 파일/폴더 구조 (공통)
+# --------------------------------------------
+# camera-app/
+#   qml/                 # QML 화면 (언어 공통)
+#     Main.qml
+#   python/
+#     app.py
+#     camera_backend.py
+#     frame_ops.py
+#     settings.py
+#     tests/             # pytest
+#   cpp/
+#     CMakeLists.txt
+#     src/
+#       main.cpp
+#       CameraBackend.h/.cpp
+#       FrameOps.h/.cpp
+#       qml.qrc
+#     tests/             # ctest
+#   assets/
+#     icons/
+#   README.md
+#
+- QML은 동일 파일을 Python/C++ 모두에서 사용(로딩 방식만 다르게).
+- 백엔드 인터페이스 이름/메서드/시그널을 **Python과 C++에서 동일**하게 유지.
+
+# --------------------------------------------
+# 코딩 스타일 & 주석 규칙
+# --------------------------------------------
+- AI는 코드를 생성할 때 **반드시** 다음 4가지를 포함:
+  1) "설계 요약(왜 이렇게 짰는지)" 5~10줄
+  2) 코드 전체에 **학습형 주석**(핵심 개념, Qt 객체 수명, 스레드, 포맷 변환)
+  3) "포팅 메모(Porting Notes)" 블록: C++ 전환 시 API/타입/이름 매핑
+  4) 짧은 사용 예시(실행/테스트 방법)
+- Python 함수/메서드에는 **Google-style docstring**과 **타입힌트**를 포함. Raises/Returns/Porting 참고를 명시.
+- C++ 예시/스텁을 함께 제시할 때는 대응되는 헤더 시그니처를 꼭 보여준다.
+- 변수/함수 네이밍:
+  - Python: snake_case (단, Qt 시그널명은 Qt 관례에 맞춰 camelCase 허용)
+  - C++: camelCase / PascalCase(클래스)
+  - QML 속성/메서드명은 백엔드와 일치
+
+# --------------------------------------------
+# Qt 멀티미디어(카메라) 규칙
+# --------------------------------------------
+- 프리뷰는 QVideoSink → QImage로 변환해 QML Image에 바인딩(또는 Widgets면 QLabel).
+- 표준 프레임 포맷은 RGBA8888로 강제 변환한다. 변환 실패 시 명시적으로 로그를 남긴다.
+- 캡처 저장은 QImage.save() 사용(확장자는 .png 기본), 파일명 규칙: capture_YYYYMMDD_hhmmss_msec.png
+- 설정 저장은 QSettings(Organization="dev.example", Application="CameraApp")로 통일한다.
+- 에러는 사용자에게 명확한 메시지(권한 없음, 장치 없음, 사용중 등)와 로그를 모두 남긴다.
+
+# --------------------------------------------
+# 스레딩/성능
+# --------------------------------------------
+- UI 스레드 규칙: 화면 업데이트는 메인 스레드에서만. 무거운 연산은 워커(파이썬: QThread/QRunnable, C++: QThread/QFuture).
+- OpenCV 사용 시: 외부로는 QImage만 노출(계약 유지). 내부 변환 경로를 주석으로 설명.
+- 실시간 요구가 높아지면 FrameOps를 C++ 라이브러리로 분리(pybind11) → Python에서 호출. 이후 C++ 앱에 재사용.
+
+# --------------------------------------------
+# 테스트/예제/문서
+# --------------------------------------------
+- AI는 새 기능 추가 시 **pytest 테스트**(입력 이미지 → 처리 결과 스냅샷 비교) 또는 **간단한 런처 예제**를 함께 만든다.
+- 테스트/예제에는 "준비물, 실행 방법, 기대 출력"을 5~8줄로 적는다.
+- README 업데이트(새 스크린샷, 아키텍처 다이어그램 간단 추가)를 자동 제안.
+
+# --------------------------------------------
+# 금지/주의
+# --------------------------------------------
+- 파이썬 전용 마법(동적 속성 주입, 과한 메타클래스, eval, 복잡한 asyncio)은 금지.
+- API 응답/프레임 같은 핵심 데이터 계약을 바꾸지 말 것(바꿔야 한다면 마이그레이션 노트 필수).
+- 예외를 삼키지 말 것: 에러 메시지/원인/대응을 로그와 UI로 전달.
+
+# --------------------------------------------
+# 출력 형식(매번 지켜야 함)
+# --------------------------------------------
+# (1) PLAN — 변경 요약(목표/핵심 설계 포인트)
+# (2) CODE — 파일별 패치(필요시 요약 + 코드블록)
+# (3) TEST/EXAMPLE — 사용/검증 방법
+# (4) PORTING NOTES — C++ 전환 시 지침(타입/시그널/파일 맵)
+# (5) NEXT — 다음 단계 제안(선택지 2~3개)
+
+# --------------------------------------------
+# 템플릿: Python 파일 헤더 주석(자동 삽입)
+# --------------------------------------------
+# """
+# Module: {file_name}
+# Purpose: {짧은 설명}
+# Architecture:
+#   - QML UI ↔ {BackendClass} (QObject)
+#   - Frame format: RGBA8888 QImage (width x height)
+# Signals/Slots Contract:
+#   - {signal_name}(arg_types...): {의미}
+#   - {slot_name}(arg_types...): {의미}
+# Porting Notes (Python → C++):
+#   - Class {BackendClass} ↔ C++ {BackendClass}
+#   - Types: QImage/QByteArray/QVariantList 유지
+#   - Avoid: Python-only features
+# """
+
+# --------------------------------------------
+# 템플릿: Python 함수 Docstring(자동 삽입)
+# --------------------------------------------
+# def func_name(arg: Type) -> ReturnType:
+#     """
+#     {역할 요약(1~2줄)}
+#     Args:
+#       arg: {설명}
+#     Returns:
+#       {반환 설명}
+#     Raises:
+#       {예외 타입}: {언제 발생하는지}
+#     Porting:
+#       - C++: {네임/시그니처}로 치환, {Qt 타입} 유지
+#     """
+
+# --------------------------------------------
+# 템플릿: C++ 시그니처 미리보기(코드와 함께 제시)
+# --------------------------------------------
+# // CameraBackend.h (C++ port skeleton)
+# class CameraBackend : public QObject {
+#   Q_OBJECT
+# public:
+#   Q_INVOKABLE bool startCamera(const QString& deviceId);
+#   Q_INVOKABLE bool stopCamera();
+# signals:
+#   void frameReady(const QImage& frame);  // RGBA8888
+#   void errorChanged(const QString& message);
+# };
+
+# --------------------------------------------
+# 커밋/PR 가이드
+# --------------------------------------------
+- 커밋 메시지: feat|fix|refactor|test|docs 범주 + 한 줄 요약 + (선택) 포팅 영향
+- PR 설명에 "변경 요약/테스트 방법/포팅 영향/리스크" 4개 절 포함
+
+# --------------------------------------------
+# AI에게 추가로 요구(바이브 코딩 보조)
+# --------------------------------------------
+- 코드 생성 전, **간단한 대안 설계 2가지**를 비교하고 선택 이유를 3~5줄로 적는다.
+- 새 파일을 만들면 README에 반영 포인트를 적는다.
+- 매 단계 끝에 **Portability Checklist**(아래 항목)를 체크한다:
+#   [ ] QML/백엔드 분리  [ ] Qt 타입 사용  [ ] 신호/슬롯 문서화
+#   [ ] RGBA8888 보장    [ ] 예외/로그     [ ] 테스트/예제
+#   [ ] 포팅 메모        [ ] README 힌트
+
+# --------------------------------------------
+# 확장 규칙(선택)
+# --------------------------------------------
+- QR/바코드, 얼굴 검출 같은 고성능 처리가 필요해지면:
+  1) Python 단계: FrameOps에 메소드 추가, 내부는 OpenCV.
+  2) 동시에 C++ 헤더 스텁을 제시하고 연산 경량화 포인트(ROI, downscale, SIMD)를 주석으로 기록.
+- 패키징:
+  - Python: pyinstaller 스펙파일 예시 포함
+  - C++: CMake install + macOS/Win 런타임 배포 메모 포함
+# ============================================
+# Cross-OS Delivery Rules (mac dev → Linux/Windows deploy)
+# ============================================
+# 목적
+# - macOS에서 개발/테스트하되, 최종 산출물을 Linux/Windows에서도 동일 기능으로 배포한다.
+# - Python 1차( PySide6 ) → C++ 포팅( Qt C++ ) 시에도 동일 규칙을 유지한다.
+
+# --------------------------------------------
+# 공통 원칙 (코드/자원/경로)
+# --------------------------------------------
+- 경로/파일 시스템:
+  - Qt의 QStandardPaths, QDir, QUrl 사용. 절대경로/하드코딩 금지.
+  - 경로 구분자는 OS별로 다르므로 문자열 결합 대신 QDir / pathlib(파이썬) 사용.
+  - 파일 시스템 대소문자 차이를 고려(Windows 기본은 case-insensitive).
+- 로케일/인코딩:
+  - 문자열/파일 I/O는 UTF-8 고정. Qt에서는 QString <-> UTF-8 변환 명시.
+  - 날짜/시간은 ISO8601, 타임존 명시. 시스템 로케일 의존 금지.
+- 환경 차이:
+  - 기능 감지는 “OS판별”이 아니라 **기능 판별**로(예: 카메라/마이크 권한, GPU 가속 가능 여부).
+  - Qt API 사용 전 `isAvailable()` 류 체크 + 친절한 오류 메시지/로그.
+- 미디어/카메라:
+  - Windows(미디어 파운데이션), macOS(AVFoundation), Linux(V4L2) 등 하부 구현 차이는 Qt가 추상화.
+  - 디바이스 선택/권한 요청 실패 시 에러 코드/가이드 표시 규칙 문서화.
+
+# --------------------------------------------
+# Python 배포 (PySide6)
+# --------------------------------------------
+- 빌드 원칙:
+  - **PyInstaller는 교차 컴파일 불가**: 타겟 OS별로 해당 OS에서 빌드한다.
+  - mac에서 mac용, Windows에서 Windows용, Linux에서 Linux용 번들 생성.
+- 런타임 포함:
+  - PySide6 wheel에 Qt 런타임이 포함되지만, OS별 배포 산출물(권한/서명/라이브러리 경로)이 다르니
+    각 OS별 실행 테스트/샌드박스 필요.
+- 규칙:
+  - `pyinstaller.spec`를 OS별로 분기하지 말고, 공통 spec + 후처리 스크립트로 차이를 흡수.
+  - 외부 바이너리(예: OpenCV 플러그인, 모델 파일)는 상대경로/리소스 시스템(QResource) 사용.
+
+# --------------------------------------------
+# C++ 배포 (Qt C++)
+# --------------------------------------------
+- 빌드 원칙:
+  - **각 OS 네이티브 환경에서 빌드**(교차 컴파일 지양). GitHub Actions/CI 매트릭스 사용.
+  - Windows: MSVC 권장(상용 드라이버/디버깅 친화), MinGW 사용 시 런타임 DLL 동봉 유의.
+  - Linux: glibc 호환성 고려(가능하면 runner를 구버전 배포판에 맞춤) → AppImage/flatpak 고려.
+  - macOS: universal 필요 여부 결정(arm64/x86_64). codesign/notarization 파이프라인 분리.
+- 런타임 번들링:
+  - Windows: `windeployqt` 사용, 필요한 Qt DLL/플러그인(plugins/platforms, imageformats, multimedia 등) 포함.
+  - macOS: `macdeployqt`로 .app 번들화, 코드서명/노터라이즈 단계 분리.
+  - Linux: `linuxdeploy`/`linuxdeployqt`로 AppImage 생성 또는 배포판별 패키지.
+- 라이선스/정적 링크:
+  - Qt LGPL 사용 시 **정적 링크 금지**(특별 조건). 상용 라이선스 정책에 맞춰 링크 전략 결정.
+  - 제3자 라이브러리 라이선스 명시(README/NOTICE).
+
+# --------------------------------------------
+# CI/CD 매트릭스 (권장)
+# --------------------------------------------
+- 최소한의 빌드/아티팩트 워크플로우를 유지한다:
+  - Python: 3.10/3.11, OS: macOS-latest / windows-latest / ubuntu-latest
+  - C++: Qt 6.x, 컴파일러: MSVC/Clang/GCC, CMake/Ninja
+- 아티팩트:
+  - mac: .app(zip), Windows: .zip(.exe 포함), Linux: .AppImage 또는 .tar.gz
+- 서명:
+  - macOS: 개발자 ID 서명 + notarization(선택)
+  - Windows: 코드 서명(선택)
+
+# --------------------------------------------
+# 샘플 GitHub Actions 스니펫 (개요)
+# --------------------------------------------
+- AI는 빌드 스크립트가 필요할 때 다음과 같은 매트릭스를 제안한다(요약형, 실제 토큰/경로는 프로젝트에 맞춤).
+# name: build-matrix
+# on: [push, pull_request]
+# jobs:
+#   build:
+#     strategy:
+#       matrix:
+#         os: [macos-latest, windows-latest, ubuntu-latest]
+#         lang: [python, cpp]
+#     runs-on: ${{ matrix.os }}
+#     steps:
+#       - uses: actions/checkout@v4
+#       - name: Setup Python (if python)
+#         if: matrix.lang == 'python'
+#         uses: actions/setup-python@v5
+#         with: { python-version: '3.11' }
+#       - name: Install Python deps (if python)
+#         if: matrix.lang == 'python'
+#         run: pip install -r python/requirements.txt pyinstaller
+#       - name: Build PyInstaller bundle (if python)
+#         if: matrix.lang == 'python'
+#         run: pyinstaller python/app.py --name CameraApp --noconsole
+#       - name: Setup Qt + CMake (if cpp)
+#         if: matrix.lang == 'cpp'
+#         run: |
+#           echo "Install Qt & CMake (runner-specific)"
+#           cmake -S cpp -B build -G Ninja
+#           cmake --build build --config Release
+#       - name: Package (if cpp)
+#         if: matrix.lang == 'cpp'
+#         run: |
+#           echo "Run windeployqt/macdeployqt/linuxdeployqt based on OS"
+#       - name: Upload Artifacts
+#         uses: actions/upload-artifact@v4
+#         with: { name: "${{ matrix.os }}-${{ matrix.lang }}", path: "dist_or_build_output" }
+
+# --------------------------------------------
+# 테스트/검증 규칙 (OS별 공통)
+# --------------------------------------------
+- 자동 테스트:
+  - Python: pytest로 기능 테스트(프레임 캡처/저장/에러 경로). 헤드리스 환경에서는 카메라 mock 또는 샘플 영상 사용.
+  - C++: ctest로 최소 단위/통합 테스트. 미디어 장치 의존 코드는 분리하여 mock 가능.
+- 수동 체크리스트:
+  - 최초 실행 시 권한 팝업/재생성 확인(카메라/마이크).
+  - 저장 경로/파일명/권한 실패 시 메시지.
+  - 비영문 사용자 디렉터리/스페이스 포함 경로에서도 정상 작동.
+  - HiDPI/스케일링에서 UI 깨짐 없는지 확인.
+
+# --------------------------------------------
+# 패키징 산출물 명명 규칙
+# --------------------------------------------
+- {app_name}-{version}-{os}-{arch}.{ext}
+  - 예) CameraApp-0.1.0-windows-x64.zip, CameraApp-0.1.0-macos-arm64.zip, CameraApp-0.1.0-linux-x64.AppImage
+
+# --------------------------------------------
+# 문서/README 의무 항목
+# --------------------------------------------
+- 지원 OS/아키텍처 명시 + 최소 요구사항(카메라/마이크/권한).
+- 설치/실행 방법(OS별 배포물 기준).
+- 알려진 이슈(OS별 차이)와 우회 방법.
+- 라이선스 표기, 제3자 라이브러리 NOTICE.
+
+globs:
+alwaysApply: true
+---
